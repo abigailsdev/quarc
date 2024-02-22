@@ -2,6 +2,7 @@ use std::env;
 use reqwest::{blocking, header};
 use warc::{WarcWriter, WarcHeader, RecordType, Record, BufferedBody};
 use soup::prelude::*;
+use url::Url;
 
 #[derive(Clone, Copy)]
 struct Nothing;
@@ -13,9 +14,9 @@ fn grab_resource(url: String) -> Result<(Vec<u8>, Option<String>), u8> {
     println!("Fetching {}.", url);
 
     let raw_response = blocking::get(url);
-    if !raw_response.is_ok() { return Err(0); }
+    if !raw_response.is_ok() { return Err(1); }
     let response = raw_response.unwrap();
-    if !response.status().is_success() { return Err(0); }
+    if !response.status().is_success() { return Err(2); }
 
     let headers = response.headers();
 
@@ -34,7 +35,7 @@ fn grab_resource(url: String) -> Result<(Vec<u8>, Option<String>), u8> {
     }
 
     let body = response.bytes();
-    if !body.is_ok() { return Err(0); }
+    if !body.is_ok() { return Err(3); }
  
     return Ok((body.unwrap().to_vec(), mime));
 }
@@ -42,6 +43,7 @@ fn grab_resource(url: String) -> Result<(Vec<u8>, Option<String>), u8> {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() <= 1 { return; }
+    let proc = Url::parse(&args[1]).expect("Invalid URL");
     let body;
     let mime;
     (body, mime) = grab_resource(args[1].to_string()).unwrap();
@@ -65,13 +67,17 @@ fn main() {
     for link in links {
         if link.get("rel").unwrap_or("".to_string()) == "me".to_string() { continue; }
         if link.get("href").is_some() {
-            dependent_urls.push(link.get("href").unwrap().to_string());
+            let mut nurl = link.get("href").unwrap().to_string();
+            if nurl.starts_with("/") { nurl = format!("{}://{}{}", proc.scheme(), proc.host_str().unwrap(), nurl); }
+            dependent_urls.push(nurl);
         }
     }
     let imgs = soup.tag("img").find_all();
     for img in imgs {
         if img.get("src").is_some() {
-            dependent_urls.push(img.get("src").unwrap().to_string());
+            let mut nurl = img.get("src").unwrap().to_string();
+            if nurl.starts_with("/") { nurl = format!("{}://{}{}", proc.scheme(), proc.host_str().unwrap(), nurl); }
+            dependent_urls.push(nurl);
         }
     }
 
@@ -79,8 +85,12 @@ fn main() {
         let dep_body;
         let dep_mime;
 
-        (dep_body, dep_mime) = grab_resource(url.to_string()).unwrap();
+        (dep_body, dep_mime) = grab_resource(url.to_string()).unwrap_or((vec![], Some("".to_string())));
         
+        if dep_body.len() == 0 {
+            continue;
+        }
+
         let mut dep_warc_head = Record::<BufferedBody>::new();
         let _ = dep_warc_head.set_warc_type(RecordType::Resource);
         dep_warc_head.set_header(WarcHeader::TargetURI, url.to_string());
