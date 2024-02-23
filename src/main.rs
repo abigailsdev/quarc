@@ -69,6 +69,7 @@ fn main() {
         if link.get("href").is_some() {
             let mut nurl = link.get("href").unwrap().to_string();
             if nurl.starts_with("/") { nurl = format!("{}://{}{}", proc.scheme(), proc.host_str().unwrap(), nurl); }
+            if !nurl.contains("://") { nurl = format!("{}://{}/{}", proc.scheme(), proc.host_str().unwrap(), nurl); }
             dependent_urls.push(nurl);
         }
     }
@@ -77,17 +78,20 @@ fn main() {
         if img.get("src").is_some() {
             let mut nurl = img.get("src").unwrap().to_string();
             if nurl.starts_with("/") { nurl = format!("{}://{}{}", proc.scheme(), proc.host_str().unwrap(), nurl); }
+            if !nurl.contains("://") { nurl = format!("{}://{}/{}", proc.scheme(), proc.host_str().unwrap(), nurl); }
             dependent_urls.push(nurl);
         }
     }
 
-    for url in dependent_urls {
+    let mut i = 0;
+    while i < dependent_urls.len() {
+        let url = dependent_urls[i].to_string();
         let dep_body;
         let dep_mime;
-
+        let mut scan = false;
         (dep_body, dep_mime) = grab_resource(url.to_string()).unwrap_or((vec![], Some("".to_string())));
-        
         if dep_body.len() == 0 {
+            i = i + 1;
             continue;
         }
 
@@ -96,11 +100,35 @@ fn main() {
         dep_warc_head.set_header(WarcHeader::TargetURI, url.to_string());
 
         if dep_mime.is_some() {
-            dep_warc_head.set_header(WarcHeader::ContentType, dep_mime.unwrap());
+            dep_warc_head.set_header(WarcHeader::ContentType, dep_mime.clone().unwrap());
+            if dep_mime.unwrap().contains("text/css") {
+                scan = true;
+            }
         }
     
-        let dep_record = dep_warc_head.add_body(dep_body);
+        let dep_record = dep_warc_head.add_body(dep_body.clone());
+        if scan {
+            let nbody = String::from_utf8_lossy(&dep_body);
+            if nbody.contains("src:") {
+                for line in nbody.lines() {
+                    if line.contains("url(") {
+                        let lines = line.split_whitespace();
+                        for x in lines {
+                            if x.ends_with(")") {
+                                let mut y = x.to_string();
+                                y.pop();
+                                y = y.replace("url(","");
+                                if !dependent_urls.contains(&y) {
+                                    dependent_urls.push(y);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         dependent_records.push(dep_record);
+        i = i + 1;
     }
 
     let mut warc = WarcWriter::from_path("output.warc");
